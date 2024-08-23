@@ -3,7 +3,7 @@ document.getElementById('join-button').addEventListener('click', () => {
     const roomId = document.getElementById('room-id').value;
   
     if (username && roomId) {
-      const socket = io();
+        const socket = io('https://node-call.vercel.app')
       socket.emit('joinRoom', { username, roomId });
   
       document.getElementById('join-screen').style.display = 'none';
