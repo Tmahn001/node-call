@@ -1,9 +1,9 @@
-document.getElementById('join-button').addEventListener('click', () => {
+document.getElementById('join-button').addEventListener('click', async () => {
     const username = document.getElementById('username').value;
     const roomId = document.getElementById('room-id').value;
   
     if (username && roomId) {
-        const socket = io('https://node-call.vercel.app')
+      const socket = io();
       socket.emit('joinRoom', { username, roomId });
   
       document.getElementById('join-screen').style.display = 'none';
@@ -14,31 +14,61 @@ document.getElementById('join-button').addEventListener('click', () => {
       let audioEnabled = true;
       let videoEnabled = true;
   
-      navigator.mediaDevices.getUserMedia({ audio: true, video: true })
-        .then(stream => {
-            localStream = stream;
-            addParticipantVideo('local', stream);
-
-            // Emit user ID or metadata instead of the stream itself
-            socket.emit('newParticipant', { id: 'local' });
-
-            // Listen for new participants
-            socket.on('newParticipant', ({ id }) => {
-            // Handle media stream exchange via Mediasoup or WebRTC here
-            // For now, just log the new participant ID
-            console.log(`New participant joined: ${id}`);
-            });
-
-            // Listen for participant leaving
-            socket.on('participantLeft', id => {
-            removeParticipantVideo(id);
-            });
-        })
-        .catch(error => {
-            console.error('Error accessing media devices.', error);
-            alert('Could not access your camera and microphone. Please check your permissions.');
+      try {
+        localStream = await navigator.mediaDevices.getUserMedia({ audio: true, video: true });
+        addParticipantVideo('local', localStream);
+  
+        // Get RTP Capabilities from the server
+        const rtpCapabilities = await new Promise(resolve => {
+          socket.on('routerRtpCapabilities', resolve);
         });
-
+  
+        // Create producer transport on the server
+        const transportInfo = await new Promise(resolve => {
+          socket.emit('createProducerTransport', resolve);
+        });
+  
+        // Create a local WebRTC transport
+        const producerTransport = createWebRtcTransport(transportInfo);
+  
+        // Connect the transport
+        await producerTransport.connect({ dtlsParameters: transportInfo.dtlsParameters });
+  
+        // Produce the video stream
+        const videoTrack = localStream.getVideoTracks()[0];
+        const videoProducer = await producerTransport.produce({ track: videoTrack });
+  
+        // Emit the producer ID to the server for broadcasting
+        socket.emit('produce', { kind: videoTrack.kind, rtpParameters: videoProducer.rtpParameters });
+  
+        // Listen for new participants
+        socket.on('newProducer', async ({ producerId }) => {
+          const consumerTransportInfo = await new Promise(resolve => {
+            socket.emit('createConsumerTransport', resolve);
+          });
+  
+          const consumerTransport = createWebRtcTransport(consumerTransportInfo);
+          await consumerTransport.connect({ dtlsParameters: consumerTransportInfo.dtlsParameters });
+  
+          const consumer = await socket.emit('consume', {
+            producerId,
+            rtpCapabilities: rtpCapabilities
+          });
+  
+          const remoteStream = new MediaStream();
+          remoteStream.addTrack(consumer.track);
+          addParticipantVideo(producerId, remoteStream);
+        });
+  
+        // Listen for participant leaving
+        socket.on('participantLeft', id => {
+          removeParticipantVideo(id);
+        });
+  
+      } catch (error) {
+        console.error('Error accessing media devices.', error);
+        alert('Could not access your camera and microphone. Please check your permissions.');
+      }
   
       document.getElementById('mute-button').addEventListener('click', () => {
         audioEnabled = !audioEnabled;
@@ -91,3 +121,27 @@ document.getElementById('join-button').addEventListener('click', () => {
       videoElement.remove();
     }
   };
+  
+  // Helper function to create a WebRTC transport
+  const createWebRtcTransport = (transportInfo) => {
+    const transport = new RTCPeerConnection({
+      iceServers: transportInfo.iceCandidates,
+    });
+  
+    transport.setConfiguration({
+      iceTransportPolicy: 'all',
+      bundlePolicy: 'balanced',
+      rtcpMuxPolicy: 'require',
+      iceCandidatePoolSize: 0,
+    });
+  
+    transport.onicecandidate = ({ candidate }) => {
+      if (candidate) {
+        // Send new ICE candidate to the server
+        socket.emit('iceCandidate', { candidate });
+      }
+    };
+  
+    return transport;
+  };
+  
