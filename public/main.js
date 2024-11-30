@@ -1,4 +1,5 @@
-document.getElementById('join-button').addEventListener('click', async () => {
+import { createWorker, Router, WebRtcTransport } from 'mediasoup-client';
+document.getElementById('join-button').addEventListener('click', () => {
     const username = document.getElementById('username').value;
     const roomId = document.getElementById('room-id').value;
   
@@ -14,61 +15,31 @@ document.getElementById('join-button').addEventListener('click', async () => {
       let audioEnabled = true;
       let videoEnabled = true;
   
-      try {
-        localStream = await navigator.mediaDevices.getUserMedia({ audio: true, video: true });
-        addParticipantVideo('local', localStream);
-  
-        // Get RTP Capabilities from the server
-        const rtpCapabilities = await new Promise(resolve => {
-          socket.on('routerRtpCapabilities', resolve);
-        });
-  
-        // Create producer transport on the server
-        const transportInfo = await new Promise(resolve => {
-          socket.emit('createProducerTransport', resolve);
-        });
-  
-        // Create a local WebRTC transport
-        const producerTransport = createWebRtcTransport(transportInfo);
-  
-        // Connect the transport
-        await producerTransport.connect({ dtlsParameters: transportInfo.dtlsParameters });
-  
-        // Produce the video stream
-        const videoTrack = localStream.getVideoTracks()[0];
-        const videoProducer = await producerTransport.produce({ track: videoTrack });
-  
-        // Emit the producer ID to the server for broadcasting
-        socket.emit('produce', { kind: videoTrack.kind, rtpParameters: videoProducer.rtpParameters });
-  
+
+    navigator.mediaDevices.getUserMedia({ audio: true, video: true })
+      .then(stream => {
+        localStream = stream;
+        addParticipantVideo('local', stream);
+
+        
+        socket.emit('newParticipant', { id: 'local', stream });
+
         // Listen for new participants
-        socket.on('newProducer', async ({ producerId }) => {
-          const consumerTransportInfo = await new Promise(resolve => {
-            socket.emit('createConsumerTransport', resolve);
-          });
-  
-          const consumerTransport = createWebRtcTransport(consumerTransportInfo);
-          await consumerTransport.connect({ dtlsParameters: consumerTransportInfo.dtlsParameters });
-  
-          const consumer = await socket.emit('consume', {
-            producerId,
-            rtpCapabilities: rtpCapabilities
-          });
-  
-          const remoteStream = new MediaStream();
-          remoteStream.addTrack(consumer.track);
-          addParticipantVideo(producerId, remoteStream);
+        socket.on('newParticipant', ({ id, stream }) => {
+          addParticipantVideo(id, stream);
+          console.log(id, stream)
         });
-  
+
         // Listen for participant leaving
         socket.on('participantLeft', id => {
           removeParticipantVideo(id);
         });
-  
-      } catch (error) {
-        console.error('Error accessing media devices.', error);
-        alert('Could not access your camera and microphone. Please check your permissions.');
-      }
+      })
+        .catch(error => {
+            console.error('Error accessing media devices.', error);
+            alert('Could not access your camera and microphone. Please check your permissions.');
+        });
+
   
       document.getElementById('mute-button').addEventListener('click', () => {
         audioEnabled = !audioEnabled;
@@ -106,14 +77,24 @@ document.getElementById('join-button').addEventListener('click', async () => {
     }
   });
   
-  const addParticipantVideo = (id, stream) => {
-    const videoElement = document.createElement('video');
-    videoElement.id = id;
-    videoElement.srcObject = stream;
-    videoElement.autoplay = true;
-    document.getElementById('participant-view').appendChild(videoElement);
-  };
+
   
+const addParticipantVideo = (id, stream) => {
+    console.log("Stream:", stream);
+    
+    if (stream instanceof MediaStream) {
+        const videoElement = document.createElement('video');
+        videoElement.id = id;
+        videoElement.srcObject = stream;
+        videoElement.autoplay = true;
+        videoElement.playsInline = true; 
+        document.getElementById('participant-view').appendChild(videoElement);
+    } else {
+        console.error("Invalid stream:", stream);
+    }
+};
+
+
   const removeParticipantVideo = (id) => {
     const videoElement = document.getElementById(id);
     if (videoElement) {
@@ -121,27 +102,3 @@ document.getElementById('join-button').addEventListener('click', async () => {
       videoElement.remove();
     }
   };
-  
-  // Helper function to create a WebRTC transport
-  const createWebRtcTransport = (transportInfo) => {
-    const transport = new RTCPeerConnection({
-      iceServers: transportInfo.iceCandidates,
-    });
-  
-    transport.setConfiguration({
-      iceTransportPolicy: 'all',
-      bundlePolicy: 'balanced',
-      rtcpMuxPolicy: 'require',
-      iceCandidatePoolSize: 0,
-    });
-  
-    transport.onicecandidate = ({ candidate }) => {
-      if (candidate) {
-        // Send new ICE candidate to the server
-        socket.emit('iceCandidate', { candidate });
-      }
-    };
-  
-    return transport;
-  };
-  
